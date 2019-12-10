@@ -31,27 +31,14 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def encode(input, class_list_encoding):
-
-    output = []
-
-    for char in input:
-
-        index = class_list_encoding.index(char)
-        output.append(index)
-
-    return numpy.asarray(output, dtype=int)
-
 # init parameters
 batch_size = 512
-class_list_encoding = [" ", "+", "-", ".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-classes = len(class_list_encoding)
+vehicle_ids = [10, 276, 301, 323, 340, 349, 351, 355, 366, 371, 374, 388, 410, 411, 449, 450, 452, 455, 457, 458, 459, 462, 465, 468, 484, 488, 528, 531, 550, 560, 561, 565, 569, 575, 584]
 cuda = True if torch.cuda.is_available() else False
 epochs = 100
-evaluate = False
 kwargs = {'num_workers': 0, 'pin_memory': False} if cuda else {}
 log_interval = 1
-lr = 0.01
+lr = 0.001
 seed = 1
 validate_batch_size = 512
 
@@ -62,27 +49,25 @@ if cuda:
 np.random.seed(seed)
 
 # define variables for loading datasets
-input_directory = "./batches/"
+input_directory = "./processed/"
 input_files = os.listdir(input_directory)
-training_batch_indexes = range(0, 68)
-validation_batch_indexes = range(68, 89)
+training_batch_indexes = [32, 22, 34, 5, 16, 20, 18, 4, 21, 23,10, 3, 17, 7, 15, 11, 1, 13, 6, 24, 31, 2, 33, 9, 8, 12, 25]
+validation_batch_indexes = [25, 14, 30, 26, 27, 28, 29]
 
 # load and init the model
 model = Net(cuda)
-model.load_state_dict(torch.load("./compiled/1575764687-epoch-0-train-02.919383-test-02.907543.pt"))
+model.load_state_dict(torch.load("./processed-compiled/1575869782-epoch-0-train-00.566840-test-00.417132.pt"))
 
 if cuda:
     model.cuda()
 
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-criterion = nn.CTCLoss(
-    blank=0,
-    reduction='mean',
-    zero_infinity=False
+criterion = nn.CrossEntropyLoss(
+    reduction="sum"
 )
 
 # define train method
-def train(epoch, batch_index, batch_size, loss_average):
+def train(epoch, batch_index, batch_size):
 
     model.train()
 
@@ -92,16 +77,16 @@ def train(epoch, batch_index, batch_size, loss_average):
 
     train_sequences_path = input_directory + "sequences-batch-" + str(batch_index) + ".npy"
     train_labels_path = input_directory + "labels-batch-" + str(batch_index) + ".npy"
-    random_order = numpy.random.shuffle(np.arange(batch_size))
-    train_data = numpy.load(train_sequences_path)[random_order]
-    train_labels = numpy.load(train_labels_path)[random_order]
-    train_data = numpy.squeeze(train_data, axis=0)
-    train_labels = numpy.squeeze(train_labels, axis=0)
+    order = np.arange(batch_size)
+    numpy.random.shuffle(order)
+    train_data = numpy.load(train_sequences_path)[order]
+    train_labels = numpy.load(train_labels_path)[order]
     train_data = torch.Tensor(train_data)
-    train_labels = torch.IntTensor(train_labels)
+    train_labels = torch.LongTensor(train_labels)
 
     input = train_data
     target = train_labels
+    target = torch.max(target, 1)[1]
     batch_size = input.shape[0]
 
     model.reset_hidden(batch_size)
@@ -111,41 +96,23 @@ def train(epoch, batch_index, batch_size, loss_average):
     if cuda:
         input, target = input.cuda(), target.cuda()
 
-    input = input.view(input.shape[0], input.shape[1], input.shape[2])
+    input = input.view(input.shape[0], 1, input.shape[1], input.shape[2])
     input, target = Variable(input), Variable(target)
-    softmax_output, log_softmax_output = model(input)
 
-    softmax_output = softmax_output.view(batch_size, -1, classes)
-    log_softmax_output = log_softmax_output.view(batch_size, -1, classes)
+    output = model(input)
 
-    predicted_digits = decode(softmax_output, class_list_encoding)
-    distance_delta = AverageMeter()
+    correct = 0
+    for n in range(0, batch_size):
+        a = int(output[n].max(0)[1])
+        b = int(target[n])
+        if a == b:
+            correct += 1
+    train_accuracy = correct / batch_size
 
-    print(predicted_digits.shape)
-    sys.exit(1)
+    print(train_accuracy)
 
-    # for id in range(0, batch_size):
-    #
-    #
-    #
-    #     for digit_id in range(0, 11):
-
-
-    # nn.CTCLoss expects a LogSoftmaxed output
-    log_softmax_output = log_softmax_output.permute(1, 0, 2)
-    input_lengths = torch.full(size=(batch_size,), fill_value=600, dtype=torch.int32)
-    target_lengths = torch.full(size=(batch_size,), fill_value=11, dtype=torch.int32)
-
-    latitude_target = target.narrow(1, 0, 1)
-    longitude_target = target.narrow(1, 1, 1)
-    latitude_target = latitude_target.view(batch_size, -1)
-    longitude_target = longitude_target.view(batch_size, -1)
-
-    # latitude loss
-    latitude_loss = criterion(log_softmax_output, latitude_target, input_lengths, target_lengths)
-    longitude_loss = criterion(log_softmax_output, longitude_target, input_lengths, target_lengths)
-    loss = latitude_loss + longitude_loss
-    losses.update(loss.item())
+    loss = criterion(output, target)
+    losses.update(loss.item() / batch_size)
 
     optimizer.zero_grad()
     loss.backward()
@@ -155,15 +122,15 @@ def train(epoch, batch_index, batch_size, loss_average):
     end = time.time()
 
     print('Train Epoch: {:03d} [{:05d}/{:05d} ({:03.0f}%)]\t'
-          'Loss {loss.val:.4f} (avg: {loss_average:.4f})\t'
+          'Loss {loss.val:.4f} (avg: {loss.avg:.4f})\t'
           'Time {batch_time.val:.3f} (avg: {batch_time.avg:.3f}, sum: {batch_time.sum:.3f})\t'.format(
         epoch, batch_index * batch_size, 34304,
-        100 * ((batch_index * batch_size) / 34304), loss=losses, loss_average=loss_average, batch_time=batch_time))
+        100 * ((batch_index * batch_size) / 34304), loss=losses, batch_time=batch_time))
 
-    return losses.avg
+    return train_accuracy
 
 # define validate method
-def validate(epoch, batch_index, batch_size, loss_average):
+def validate(epoch, batch_index, batch_size):
 
     model.eval()
 
@@ -175,16 +142,16 @@ def validate(epoch, batch_index, batch_size, loss_average):
 
         train_sequences_path = input_directory + "sequences-batch-" + str(batch_index) + ".npy"
         train_labels_path = input_directory + "labels-batch-" + str(batch_index) + ".npy"
-        random_order = numpy.random.shuffle(np.arange(batch_size))
-        train_data = numpy.load(train_sequences_path)[random_order]
-        train_labels = numpy.load(train_labels_path)[random_order]
-        train_data = numpy.squeeze(train_data, axis=0)
-        train_labels = numpy.squeeze(train_labels, axis=0)
+        order = np.arange(batch_size)
+        numpy.random.shuffle(order)
+        train_data = numpy.load(train_sequences_path)[order]
+        train_labels = numpy.load(train_labels_path)[order]
         train_data = torch.Tensor(train_data)
-        train_labels = torch.IntTensor(train_labels)
+        train_labels = torch.LongTensor(train_labels)
 
         input = train_data
         target = train_labels
+        target = torch.max(target, 1)[1]
         batch_size = input.shape[0]
 
         model.reset_hidden(batch_size)
@@ -194,59 +161,64 @@ def validate(epoch, batch_index, batch_size, loss_average):
         if cuda:
             input, target = input.cuda(), target.cuda()
 
-        input = input.view(input.shape[0], input.shape[1], input.shape[2])
+        input = input.view(input.shape[0], 1, input.shape[1], input.shape[2])
         input, target = Variable(input), Variable(target)
-        softmax_output, log_softmax_output = model(input)
 
-        softmax_output = softmax_output.view(batch_size, -1, classes)
-        log_softmax_output = log_softmax_output.view(batch_size, -1, classes)
+        output = model(input)
 
-        # nn.CTCLoss expects a LogSoftmaxed output
-        log_softmax_output = log_softmax_output.permute(1, 0, 2)
-        input_lengths = torch.full(size=(batch_size,), fill_value=600, dtype=torch.int32)
-        target_lengths = torch.full(size=(batch_size,), fill_value=11, dtype=torch.int32)
+        correct = 0
+        for n in range(0, batch_size):
+            a = int(output[n].max(0)[1])
+            b = int(target[n])
+            if a == b:
+                correct += 1
+        test_accuracy = correct / batch_size
 
-        latitude_target = target.narrow(1, 0, 1)
-        longitude_target = target.narrow(1, 1, 1)
-        latitude_target = latitude_target.view(batch_size, -1)
-        longitude_target = longitude_target.view(batch_size, -1)
+        print(test_accuracy)
 
-        # latitude loss
-        latitude_loss = criterion(log_softmax_output, latitude_target, input_lengths, target_lengths)
-        longitude_loss = criterion(log_softmax_output, longitude_target, input_lengths, target_lengths)
-        loss = latitude_loss + longitude_loss
-        losses.update(loss.item())
+        loss = criterion(output, target)
+        losses.update(loss.item() / batch_size)
 
         batch_time.update(time.time() - end)
         end = time.time()
         print('Test Epoch: {:03d} [{:05d}/{:05d} ({:03.0f}%)]\t'
-              'Loss {loss.val:.4f} (avg: {loss_average:.4f})\t'
+              'Loss {loss.val:.4f} (avg: {loss.avg:.4f})\t'
               'Time {batch_time.val:.3f} (avg: {batch_time.avg:.3f}, sum: {batch_time.sum:.3f})\t'.format(
             epoch, (batch_index - min(validation_batch_indexes)) * validate_batch_size, 9728,
-            100 * (((batch_index - min(validation_batch_indexes)) * validate_batch_size) / 9728), loss=losses, loss_average=loss_average, batch_time=batch_time))
+            100 * (((batch_index - min(validation_batch_indexes)) * validate_batch_size) / 9728), loss=losses, batch_time=batch_time))
 
-        return losses.avg
+        return test_accuracy
 
 for epoch in range(0, epochs):
 
-    train_loss = AverageMeter()
-    validation_loss = AverageMeter()
+    epoch_accuracy = AverageMeter()
 
     for batch_index in training_batch_indexes:
-        train_loss.update(train(epoch, batch_index, batch_size, train_loss.avg))
+        epoch_accuracy.update(train(epoch, batch_index, batch_size))
+
+    print('-' * 107)
+
+    train_accuracy = epoch_accuracy.avg
+    print(train_accuracy)
+    epoch_accuracy = AverageMeter()
 
     print('-' * 107)
 
     for batch_index in validation_batch_indexes:
-        validation_loss.update(validate(epoch, batch_index, batch_size, validation_loss.avg))
+        epoch_accuracy.update(validate(epoch, batch_index, batch_size))
+
+    print('-' * 107)
+
+    test_accuracy = epoch_accuracy.avg
+    print(test_accuracy)
 
     print('-' * 107)
 
     filename = str(int(time.time()))
     filename = filename + "-epoch-" + str(epoch)
-    filename = filename + "-train-{:09f}".format(train_loss.avg)
-    filename = filename + "-test-{:09f}".format(validation_loss.avg)
-    filepath = "./compiled/" + filename + ".pt"
+    filename = filename + "-train-{:09f}".format(train_accuracy)
+    filename = filename + "-test-{:09f}".format(test_accuracy)
+    filepath = "./processed-compiled/" + filename + ".pt"
     print("Saving ", filepath)
     torch.save(model.state_dict(), filepath)
     print("Saved ", filepath)
