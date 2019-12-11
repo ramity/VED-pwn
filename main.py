@@ -11,7 +11,6 @@ import time
 import os
 import sys
 
-from decode import decode
 from model import *
 
 class AverageMeter(object):
@@ -56,7 +55,7 @@ validation_batch_indexes = [25, 14, 30, 26, 27, 28, 29]
 
 # load and init the model
 model = Net(cuda)
-model.load_state_dict(torch.load("./processed-compiled/1575869782-epoch-0-train-00.566840-test-00.417132.pt"))
+# model.load_state_dict(torch.load("./processed-compiled/1575869782-epoch-0-train-00.566840-test-00.417132.pt"))
 
 if cuda:
     model.cuda()
